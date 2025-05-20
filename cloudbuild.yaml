@@ -2,9 +2,9 @@ steps:
   - name: "gcr.io/buildpacks/builder:v1"
     args:
       - "-path=."
-      - "-tag=gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
+      - "-tag=gcr.io/$evergreen-45696013/sftp-fetch-job:latest"
 images:
-  - "gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
+  - "gcr.io/$evergreen-45696013/sftp-fetch-job:latest"
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: "1200s"
