@@ -1,12 +1,10 @@
-# cloudbuild.yaml
-# Use the Cloud Native Buildpacks builder to build a Node.js image
 steps:
   - name: "gcr.io/buildpacks/builder:v1"
     args:
-      - "-path=."  
+      - "-path=."
       - "-tag=gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
 images:
   - "gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
-timeout: "1200s"
 options:
   logging: CLOUD_LOGGING_ONLY
+timeout: "1200s"
