@@ -3,10 +3,8 @@
 steps:
   - name: "gcr.io/buildpacks/builder:v1"
     args:
-      - "build"                            # invoke `pack build`
-      - "-t"                               # tag flag
-      - "gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
-      - "."                                # build the current directory
+      - "-path=."  
+      - "-tag=gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
 images:
   - "gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
 timeout: "1200s"
