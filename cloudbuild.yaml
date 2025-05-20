@@ -3,14 +3,12 @@
 steps:
   - name: "gcr.io/buildpacks/builder:v1"
     args:
-      # Tag the output image
-      - "-tag=gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
-      # (no need to pass source path; defaults to /workspace)
-# Tell Cloud Build to push this image
+      - "build"                            # invoke `pack build`
+      - "-t"                               # tag flag
+      - "gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
+      - "."                                # build the current directory
 images:
   - "gcr.io/$PROJECT_ID/sftp-fetch-job:latest"
-# Optional: increase build timeout if you have large deps
 timeout: "1200s"
-
 options:
-  defaultLogsBucketBehavior: REGIONAL_USER_OWNED_BUCKET
+  logging: CLOUD_LOGGING_ONLY
