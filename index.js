@@ -108,7 +108,7 @@ async function fetchFiles() {
 async function main() {
   try {
 
-    const res = await fetch('https://ifconfig.co/json');
+    const res = await fetch('https://ipv4.icanhazip.com');
     console.log('Egress IP:', await res.text());
     
     await fetchFiles();
