@@ -1,15 +1,16 @@
-# Use the official Node 22 image as the base
+# Dockerfile
 FROM node:22
 
-# Create and set the working directory
 WORKDIR /usr/src/app
 
-# Copy package manifests and install only production deps
-COPY package*.json ./
-RUN npm ci --only=production
+# Copy package manifests
+COPY package.json package-lock.json* ./
 
-# Copy all application source code
+# Install prod deps (falls back to npm install if no lockfile)
+RUN npm install --only=production
+
+# Copy rest of your code
 COPY . .
 
-# Run your entrypoint script
+# Run your job
 CMD ["node", "index.js"]
