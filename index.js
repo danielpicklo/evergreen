@@ -28,7 +28,7 @@ const sftpConfig = {
 const MAX_SIZE = 500 * 1024 * 1024; // 500 MB
 
 async function uploadFile(localPath, fileName) {
-  const dated = `${fileName.replace('.txt','')}_${new Date().toISOString().split('T')[0]}.txt`;
+  const dated = `${fileName.replace('.txt','')}____${new Date().toISOString().split('T')[0]}.txt`;
   await bucket.upload(localPath, {
     destination: `uploads/${dated}`,
     gzip: true
