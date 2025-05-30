@@ -40,39 +40,35 @@ async function uploadFile(localPath, fileName) {
 }
 
 async function splitAndUpload(localPath, fileName) {
-  const stream = fs.createReadStream(localPath, { highWaterMark: MAX_SIZE });
+  const readStream = fs.createReadStream(localPath, { highWaterMark: MAX_SIZE });
   let part = 0;
   let header = null;
 
-  stream.on('data', chunk => {
+  for await (const chunk of readStream) {
     part++;
     const chunkName = `${fileName.replace('.txt','')}___part${part}.txt`;
     const chunkPath = path.join('/tmp', chunkName);
     const ws = fs.createWriteStream(chunkPath);
 
-    // capture header once
-    if (!header) {
-      const firstLine = chunk.toString().split('\n')[0] + '\n';
-      header = firstLine;
-      ws.write(firstLine);
+    // If we haven't captured & written the header line, do so now:
+    if (header === null) {
+      header = chunk.toString().split('\n')[0] + '\n';
+      ws.write(header);
     }
 
+    // Write the chunk and wait for the write to finish:
     ws.write(chunk);
-    ws.end();
-
-    console.log('Write Steam End')
-
-    ws.on('finish', async () => {
-      await uploadFile(chunkPath, chunkName);
-      console.log('Uploaded', chunkName)
-      fs.unlinkSync(chunkPath);
+    await new Promise((resolve, reject) => {
+      ws.end();
+      ws.on('finish', resolve);
+      ws.on('error', reject);
     });
-  });
 
-  await new Promise((resolve, reject) => {
-    stream.on('end', resolve);
-    stream.on('error', reject);
-  });
+    // Now upload and clean up:
+    await uploadFile(chunkPath, chunkName);
+    fs.unlinkSync(chunkPath);
+    console.log(`Uploaded and removed ${chunkName}`);
+  }
 }
 
 async function fetchFiles() {
