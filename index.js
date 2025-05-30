@@ -60,8 +60,11 @@ async function splitAndUpload(localPath, fileName) {
     ws.write(chunk);
     ws.end();
 
+    console.log('Write Steam End')
+
     ws.on('finish', async () => {
       await uploadFile(chunkPath, chunkName);
+      console.log('Uploaded', chunkName)
       fs.unlinkSync(chunkPath);
     });
   });
@@ -83,10 +86,10 @@ async function fetchFiles() {
     console.log(`→ Downloading ${name}`);
     await sftp.fastGet(remote, local, {
       concurrency: 1, // Number of concurrent downloads
-      chunkSize: 512 * 1024, // 512KB per chunk
+      chunkSize: 1024 * 1024, // 512KB per chunk
       step: (transferred, chunk, total) => {
         const pct = Math.floor((transferred/total)*100);
-        if (pct % 5 === 0) console.log(`  • ${name}: ${pct}%`);
+        if (pct % 10 === 0) console.log(`  • ${name}: ${pct}%`);
       }
     });
 
