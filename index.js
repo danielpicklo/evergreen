@@ -8,17 +8,20 @@ const storage = new Storage();
 const bucket = storage.bucket('evergreen-import-storage');
 const remoteDir = '/Test/Export/';
 const filesToFetch = [
-  'test0.txt',
-  'test1.txt',
-  'test2.txt'
+  'TMZip.txt',
+  'SalesRep.txt',
+  'CM.txt',
+  'PRODUCTS_EVERGREEN.txt',
+  'Evergreen_OH_Full.txt',
+  'Evergreen_OD_Delta.txt'
 ];
 
 // SFTP authentication from env or hard-coded
 const sftpConfig = {
-  host: 'us-east-1.sftpcloud.io',
+  host: 'datx.myevergreen.com',
   port: 22,
-  username: 'daniel-evg-dev-test',
-  password: 'P5S5f7OI30kcxnFpGVdt8KmEGzeuIuKb',
+  username: process.env.USERNAME,
+  password: process.env.PASSWORD,
   compress: false,
   keepaliveInterval: 10000000,
   readyTimeout: 20000000
