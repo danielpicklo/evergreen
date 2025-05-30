@@ -82,7 +82,7 @@ async function fetchFiles() {
 
     console.log(`→ Downloading ${name}`);
     await sftp.fastGet(remote, local, {
-      concurrency: 64,
+      concurrency: 16,
       chunkSize: 1024 * 1024,
       step: (transferred, chunk, total) => {
         const pct = Math.floor((transferred/total)*100);
