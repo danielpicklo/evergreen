@@ -8,11 +8,11 @@ const storage = new Storage();
 const bucket = storage.bucket('evergreen-import-storage');
 const remoteDir = '/Test/Export/';
 const filesToFetch = [
-  //'TMZip.txt',
-  //'SalesRep.txt',
-  //'CM.txt',
-  //'PRODUCTS_EVERGREEN.txt',
-  //'Evergreen_OH_Full.txt',
+  'TMZip.txt',
+  'SalesRep.txt',
+  'CM.txt',
+  'PRODUCTS_EVERGREEN.txt',
+  'Evergreen_OH_Full.txt',
   'Evergreen_OD_Delta.txt'
 ];
 
@@ -82,7 +82,7 @@ async function fetchFiles() {
     console.log(`→ Downloading ${name}`);
     await sftp.fastGet(remote, local, {
       concurrency: 1, // Number of concurrent downloads
-      chunkSize: 1024 * 1024, // 512KB per chunk
+      chunkSize: 1024 * 1024, // 1MB per chunk
       step: (transferred, chunk, total) => {
         const pct = Math.floor((transferred/total)*100);
         if (pct % 10 === 0) console.log(`  • ${name}: ${pct}%`);
