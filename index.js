@@ -1,14 +1,14 @@
-const SFTPClient       = require('ssh2-sftp-client');
-const { Storage }      = require('@google-cloud/storage');
-const fs               = require('fs');
-const path             = require('path');
-const readline         = require('readline');
-const iconv            = require('iconv-lite');
-const { Transform }    = require('stream');
+const SFTPClient    = require('ssh2-sftp-client');
+const { Storage }   = require('@google-cloud/storage');
+const fs            = require('fs');
+const path          = require('path');
+const readline      = require('readline');
+const iconv         = require('iconv-lite');
+const { Transform } = require('stream');
 
-const sftp = new SFTPClient();
+const sftp    = new SFTPClient();
 const storage = new Storage();
-const bucket = storage.bucket('evergreen-import-storage');
+const bucket  = storage.bucket('evergreen-import-storage');
 const remoteDir = '/Test/Export/';
 
 const filesToFetch = [
@@ -49,11 +49,14 @@ async function uploadFile(localPath, fileName) {
   // 2) Decode from UTF-16LE → JS string
   const decodeStream = iconv.decodeStream('utf16le');
 
-  // 3) Normalize CRLF → LF
+  // 3) Normalize CRLF → LF on string chunks
   const nlNormalizer = new Transform({
+    readableObjectMode: true,  // we’ll push strings
+    writableObjectMode: true,  // we’ll receive strings from decodeStream
     transform(chunk, encoding, callback) {
-      const asString = chunk.toString('utf8').replace(/\r\n/g, '\n');
-      callback(null, Buffer.from(asString, 'utf8'));
+      // chunk is a JS string here
+      const str = chunk.replace(/\r\n/g, '\n');
+      callback(null, str);
     }
   });
 
@@ -72,10 +75,10 @@ async function uploadFile(localPath, fileName) {
   // 6) Pipe: raw → decode → normalize → encode → GCS
   await new Promise((resolve, reject) => {
     rawStream
-      .pipe(decodeStream)
-      .pipe(nlNormalizer)
-      .pipe(encodeStream)
-      .pipe(remoteWrite)
+      .pipe(decodeStream)   // Buffer → string
+      .pipe(nlNormalizer)   // string → string (CRLF→LF)
+      .pipe(encodeStream)   // string → Buffer (UTF-8)
+      .pipe(remoteWrite)    // Buffer → GCS
       .on('error', reject)
       .on('finish', resolve);
   });
