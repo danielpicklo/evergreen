@@ -2,6 +2,7 @@ const SFTPClient = require('ssh2-sftp-client');
 const { Storage } = require('@google-cloud/storage');
 const fs = require('fs');
 const path = require('path');
+const readline = require('readline');
 
 const sftp = new SFTPClient();
 const storage = new Storage();
