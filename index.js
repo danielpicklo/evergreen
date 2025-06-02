@@ -13,10 +13,10 @@ const remoteDir = '/Test/Export/';
 
 const filesToFetch = [
   'TMZip.txt',
-  'SalesRep.txt',
-  'CM.txt',
-  'PRODUCTS_EVERGREEN.txt',
-  'Evergreen_OH_Full.txt',
+  //'SalesRep.txt',
+  //'CM.txt',
+  //'PRODUCTS_EVERGREEN.txt',
+  //'Evergreen_OH_Full.txt',
   'Evergreen_OD_Delta.txt'
 ];
 
@@ -103,24 +103,40 @@ async function uploadFile(localPath, fileName, skipTranscode = false) {
  * and never slicing a row in half. Then uses uploadFile(..., true)
  * to upload each chunk “as is” (skipTranscode).
  */
+/**
+ * Splits a large UTF-16LE/CRLF CSV into UTF-8/LF chunks,
+ * preserving the header in each chunk, and never splitting mid-row.
+ */
 async function splitAndUpload(localPath, fileName) {
-  const fileStream = fs.createReadStream(localPath);
-  const rl = readline.createInterface({ input: fileStream });
+  // 1) Build a “normalized UTF-8” read stream for readline:
+  const utf8Stream = fs.createReadStream(localPath)
+    .pipe(iconv.decodeStream('utf16le'))       // Buffer (UTF-16LE) → string
+    .pipe(new Transform({
+      readableObjectMode: true,     // we push JS strings out
+      writableObjectMode: true,     // we accept strings in
+      transform(chunk, encoding, callback) {
+        // chunk is a JS string; replace CRLF → LF
+        const str = chunk.replace(/\r\n/g, '\n');
+        callback(null, str);
+      }
+    }));
+
+  const rl = readline.createInterface({ input: utf8Stream });
 
   let headerLine = null;
   let part = 0;
   let currentLines = [];
   let currentBytes = 0;
 
-  // Flush currentLines into a chunk file, then upload (skipTranscode)
   async function flushChunk() {
     if (currentLines.length === 0) return;
     part++;
     const chunkName = `${fileName.replace('.txt','')}___part${part}.txt`;
     const chunkPath = path.join('/tmp', chunkName);
 
+    // Write header + buffered lines to a temporary UTF-8 file
     await new Promise((resolve, reject) => {
-      const ws = fs.createWriteStream(chunkPath);
+      const ws = fs.createWriteStream(chunkPath, { encoding: 'utf8' });
       ws.on('error', reject);
       ws.on('finish', resolve);
 
@@ -131,7 +147,7 @@ async function splitAndUpload(localPath, fileName) {
       ws.end();
     });
 
-    // Upload chunk WITHOUT transcoding (it's already UTF-8/LF)
+    // Now upload this chunk (it's already UTF-8/LF)
     await uploadFile(chunkPath, chunkName, true);
     fs.unlinkSync(chunkPath);
 
@@ -141,22 +157,24 @@ async function splitAndUpload(localPath, fileName) {
 
   for await (const line of rl) {
     if (headerLine === null) {
+      // First line is the header (UTF-8 string)
       headerLine = line;
       currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
       continue;
     }
+
     const thisLineBytes = Buffer.byteLength(line + '\n', 'utf8');
     if (currentBytes + thisLineBytes > MAX_SIZE) {
       await flushChunk();
     }
+
     currentLines.push(line);
     currentBytes += thisLineBytes;
   }
 
-  // Final flush
+  // Final flush if any lines remain
   await flushChunk();
 }
-
 async function fetchFiles() {
   await sftp.connect(sftpConfig);
   console.log('✔ Connected to SFTP');
