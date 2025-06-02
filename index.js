@@ -98,83 +98,116 @@ async function uploadFile(localPath, fileName, skipTranscode = false) {
 }
 
 /**
- * Splits a large CSV-formatted .txt into multiple files,
- * always including the header as the first line in each chunk
- * and never slicing a row in half. Then uses uploadFile(..., true)
- * to upload each chunk “as is” (skipTranscode).
+ * Splits a large UTF-16LE/CRLF CSV into exactly two equal-row chunks.
+ *
+ * - First pass: count total data rows (excluding header).
+ * - Second pass: write header + first half of rows → part1, 
+ *                header + second half → part2.
+ * - Upload each part (they’re already UTF-8/LF) with skipTranscode=true.
  */
-/**
- * Splits a large UTF-16LE/CRLF CSV into UTF-8/LF chunks,
- * preserving the header in each chunk, and never splitting mid-row.
- */
-async function splitAndUpload(localPath, fileName) {
-  // 1) Build a “normalized UTF-8” read stream for readline:
-  const utf8Stream = fs.createReadStream(localPath)
-    .pipe(iconv.decodeStream('utf16le'))       // Buffer (UTF-16LE) → string
+async function splitByRowCountAndUpload(localPath, fileName) {
+  // 1) First pass: count rows
+  let totalRows = 0;
+  let headerLine = null;
+
+  // Build a decode+normalize stream for counting
+  const countStream = fs.createReadStream(localPath)
+    .pipe(iconv.decodeStream('utf16le'))
     .pipe(new Transform({
-      readableObjectMode: true,     // we push JS strings out
-      writableObjectMode: true,     // we accept strings in
+      readableObjectMode: true,
+      writableObjectMode: true,
       transform(chunk, encoding, callback) {
-        // chunk is a JS string; replace CRLF → LF
-        const str = chunk.replace(/\r\n/g, '\n');
-        callback(null, str);
+        callback(null, chunk.replace(/\r\n/g, '\n'));
       }
     }));
 
-  const rl = readline.createInterface({ input: utf8Stream });
+  const rlCount = readline.createInterface({ input: countStream });
+  let lineNum = 0;
+  for await (const line of rlCount) {
+    lineNum++;
+    if (lineNum === 1) {
+      headerLine = line;       // capture header
+    } else {
+      totalRows++;
+    }
+  }
+  rlCount.close();
 
-  let headerLine = null;
-  let part = 0;
-  let currentLines = [];
-  let currentBytes = 0;
-
-  async function flushChunk() {
-    if (currentLines.length === 0) return;
-    part++;
-    const chunkName = `${fileName.replace('.txt','')}___part${part}.txt`;
-    const chunkPath = path.join('/tmp', chunkName);
-
-    // Write header + buffered lines to a temporary UTF-8 file
-    await new Promise((resolve, reject) => {
-      const ws = fs.createWriteStream(chunkPath, { encoding: 'utf8' });
-      ws.on('error', reject);
-      ws.on('finish', resolve);
-
-      ws.write(headerLine + '\n');
-      for (const line of currentLines) {
-        ws.write(line + '\n');
-      }
-      ws.end();
-    });
-
-    // Now upload this chunk (it's already UTF-8/LF)
-    await uploadFile(chunkPath, chunkName, true);
-    fs.unlinkSync(chunkPath);
-
-    currentLines = [];
-    currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
+  if (!headerLine) {
+    throw new Error(`No header found in ${fileName}`);
+  }
+  if (totalRows === 0) {
+    // no data to split—just upload as a single file
+    await uploadFile(localPath, fileName);
+    return;
   }
 
-  for await (const line of rl) {
-    if (headerLine === null) {
-      // First line is the header (UTF-8 string)
-      headerLine = line;
-      currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
+  const half = Math.ceil(totalRows / 2);
+  console.log(`  → ${fileName} has ${totalRows} rows; splitting into ${half} / ${totalRows - half}`);
+
+  // 2) Second pass: write two chunk files
+  const decodeNormalize2 = fs.createReadStream(localPath)
+    .pipe(iconv.decodeStream('utf16le'))
+    .pipe(new Transform({
+      readableObjectMode: true,
+      writableObjectMode: true,
+      transform(chunk, encoding, callback) {
+        callback(null, chunk.replace(/\r\n/g, '\n'));
+      }
+    }));
+
+  const rlSplit = readline.createInterface({ input: decodeNormalize2 });
+
+  let partIdx = 0;
+  let writtenRows = 0; // tracks how many data-rows have been written to current part
+  let writer = null;
+
+  // Helper to open a new chunk file and write its header
+  function openNewWriter() {
+    partIdx++;
+    const chunkName = `${fileName.replace('.txt','')}___part${partIdx}.txt`;
+    const chunkPath = path.join('/tmp', chunkName);
+    writer = fs.createWriteStream(chunkPath, { encoding: 'utf8' });
+    writer.write(headerLine + '\n');
+    return { chunkName, chunkPath };
+  }
+
+  // Kick off part1
+  let { chunkName, chunkPath } = openNewWriter();
+
+  let dataRowIdx = 0;
+  for await (const line of rlSplit) {
+    if (dataRowIdx === 0) {
+      // already wrote header in openNewWriter()
+      dataRowIdx++; 
       continue;
     }
+    dataRowIdx++;
 
-    const thisLineBytes = Buffer.byteLength(line + '\n', 'utf8');
-    if (currentBytes + thisLineBytes > MAX_SIZE) {
-      await flushChunk();
+    // Determine which part this row belongs to
+    if (writtenRows >= half) {
+      // close previous part, upload it, then start part2
+      writer.end();
+      await uploadFile(chunkPath, chunkName, true);
+      fs.unlinkSync(chunkPath);
+
+      // start new writer for part2
+      ({ chunkName, chunkPath } = openNewWriter());
+      writtenRows = 0;
     }
 
-    currentLines.push(line);
-    currentBytes += thisLineBytes;
+    writer.write(line + '\n');
+    writtenRows++;
   }
 
-  // Final flush if any lines remain
-  await flushChunk();
+  // Close and upload the last part if it has any rows
+  writer.end();
+  await uploadFile(chunkPath, chunkName, true);
+  fs.unlinkSync(chunkPath);
+
+  console.log(`  ✓ Finished splitting ${fileName} into 2 parts`);
 }
+
 async function fetchFiles() {
   await sftp.connect(sftpConfig);
   console.log('✔ Connected to SFTP');
@@ -198,7 +231,7 @@ async function fetchFiles() {
 
     if (size > MAX_SIZE) {
       console.log(`  ↯ Splitting ${name}`);
-      await splitAndUpload(local, name);
+      await splitByRowCountAndUpload(local, name);
     } else {
       console.log(`  ↑ Uploading ${name}`);
       await uploadFile(local, name); // no skipTranscode => do transcode
