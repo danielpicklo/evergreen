@@ -1,13 +1,16 @@
-const SFTPClient = require('ssh2-sftp-client');
-const { Storage } = require('@google-cloud/storage');
-const fs = require('fs');
-const path = require('path');
-const readline = require('readline');
+const SFTPClient       = require('ssh2-sftp-client');
+const { Storage }      = require('@google-cloud/storage');
+const fs               = require('fs');
+const path             = require('path');
+const readline         = require('readline');
+const iconv            = require('iconv-lite');
+const { Transform }    = require('stream');
 
 const sftp = new SFTPClient();
 const storage = new Storage();
 const bucket = storage.bucket('evergreen-import-storage');
 const remoteDir = '/Test/Export/';
+
 const filesToFetch = [
   'TMZip.txt',
   'SalesRep.txt',
@@ -31,13 +34,53 @@ const sftpConfig = {
 // chunk threshold
 const MAX_SIZE = 500 * 1024 * 1024; // 500 MB
 
+/**
+ * Transcode a local file (UTF-16LE/CRLF) → (UTF-8/LF) on the fly,
+ * then upload it to GCS under "uploads/<datedName>".
+ */
 async function uploadFile(localPath, fileName) {
-  const dated = `${fileName.replace('.txt','')}____${new Date().toISOString().split('T')[0]}.txt`;
-  await bucket.upload(localPath, {
-    destination: `uploads/${dated}`,
-    gzip: true
+  // Build the destination name with today’s date
+  const dated = `${fileName.replace('.txt','')}____${new Date()
+    .toISOString().split('T')[0]}.txt`;
+
+  // 1) Read the raw local file
+  const rawStream = fs.createReadStream(localPath);
+
+  // 2) Decode from UTF-16LE → JS string
+  const decodeStream = iconv.decodeStream('utf16le');
+
+  // 3) Normalize CRLF → LF
+  const nlNormalizer = new Transform({
+    transform(chunk, encoding, callback) {
+      const asString = chunk.toString('utf8').replace(/\r\n/g, '\n');
+      callback(null, Buffer.from(asString, 'utf8'));
+    }
   });
-  console.log(`✓ Uploaded ${dated}`);
+
+  // 4) Encode JS string → UTF-8 bytes
+  const encodeStream = iconv.encodeStream('utf8');
+
+  // 5) Create a GCS write stream for "uploads/<dated>"
+  const remoteWrite = bucket
+    .file(`uploads/${dated}`)
+    .createWriteStream({
+      resumable: false,
+      gzip: true,
+      metadata: { contentType: 'text/csv; charset=utf-8' }
+    });
+
+  // 6) Pipe: raw → decode → normalize → encode → GCS
+  await new Promise((resolve, reject) => {
+    rawStream
+      .pipe(decodeStream)
+      .pipe(nlNormalizer)
+      .pipe(encodeStream)
+      .pipe(remoteWrite)
+      .on('error', reject)
+      .on('finish', resolve);
+  });
+
+  console.log(`✓ Uploaded (transcoded) ${dated}`);
 }
 
 /**
@@ -74,7 +117,7 @@ async function splitAndUpload(localPath, fileName) {
       ws.end();
     });
 
-    // Upload and clean up
+    // Use the new uploadFile (which transcodes) instead of bucket.upload
     await uploadFile(chunkPath, chunkName);
     fs.unlinkSync(chunkPath);
 
@@ -118,10 +161,10 @@ async function fetchFiles() {
 
     console.log(`→ Downloading ${name}`);
     await sftp.fastGet(remote, local, {
-      concurrency: 1, // Number of concurrent downloads
-      chunkSize: 1024 * 1024, // 1MB per chunk
+      concurrency: 1,              // Number of concurrent reads
+      chunkSize:   1024 * 1024,    // 1MB per chunk
       step: (transferred, chunk, total) => {
-        const pct = Math.floor((transferred/total)*100);
+        const pct = Math.floor((transferred / total) * 100);
         if (pct % 10 === 0) console.log(`  • ${name}: ${pct}%`);
       }
     });
@@ -146,10 +189,10 @@ async function fetchFiles() {
 
 async function main() {
   try {
-
+    // (Optional) log egress IP
     const res = await fetch('https://ipv4.icanhazip.com');
     console.log('Egress IP:', await res.text());
-    
+
     await fetchFiles();
     process.exit(0);
   } catch (err) {
