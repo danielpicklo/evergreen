@@ -39,36 +39,72 @@ async function uploadFile(localPath, fileName) {
   console.log(`✓ Uploaded ${dated}`);
 }
 
+/**
+ * Splits a large CSV‐formatted .txt into multiple files,
+ * always including the header as the first line in each chunk
+ * and never slicing a row in half.
+ */
 async function splitAndUpload(localPath, fileName) {
-  const readStream = fs.createReadStream(localPath, { highWaterMark: MAX_SIZE });
-  let part = 0;
-  let header = null;
+  const fileStream = fs.createReadStream(localPath);
+  const rl = readline.createInterface({ input: fileStream });
 
-  for await (const chunk of readStream) {
+  let headerLine = null;
+  let part = 0;
+  let currentLines = [];
+  let currentBytes = 0;
+
+  // Helper to flush currentLines into a chunk
+  async function flushChunk() {
+    if (currentLines.length === 0) return;
     part++;
     const chunkName = `${fileName.replace('.txt','')}___part${part}.txt`;
     const chunkPath = path.join('/tmp', chunkName);
-    const ws = fs.createWriteStream(chunkPath);
 
-    // If we haven't captured & written the header line, do so now:
-    if (header === null) {
-      header = chunk.toString().split('\n')[0] + '\n';
-      ws.write(header);
-    }
-
-    // Write the chunk and wait for the write to finish:
-    ws.write(chunk);
+    // Write header + buffered lines to a temporary file
     await new Promise((resolve, reject) => {
-      ws.end();
-      ws.on('finish', resolve);
+      const ws = fs.createWriteStream(chunkPath);
       ws.on('error', reject);
+      ws.on('finish', resolve);
+
+      ws.write(headerLine + '\n');
+      for (const line of currentLines) {
+        ws.write(line + '\n');
+      }
+      ws.end();
     });
 
-    // Now upload and clean up:
+    // Upload and clean up
     await uploadFile(chunkPath, chunkName);
     fs.unlinkSync(chunkPath);
-    console.log(`Uploaded and removed ${chunkName}`);
+
+    // Reset buffers
+    currentLines = [];
+    currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
   }
+
+  for await (const line of rl) {
+    if (headerLine === null) {
+      // Capture the very first line as header
+      headerLine = line;
+      currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
+      continue;
+    }
+
+    // Measure this line’s byte length + newline
+    const thisLineBytes = Buffer.byteLength(line + '\n', 'utf8');
+
+    // If adding it would exceed MAX_SIZE, flush what we have so far
+    if (currentBytes + thisLineBytes > MAX_SIZE) {
+      await flushChunk();
+    }
+
+    // Buffer this line for the next chunk
+    currentLines.push(line);
+    currentBytes += thisLineBytes;
+  }
+
+  // Flush any remaining lines as the last chunk
+  await flushChunk();
 }
 
 async function fetchFiles() {
