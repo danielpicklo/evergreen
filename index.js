@@ -35,24 +35,36 @@ const sftpConfig = {
 const MAX_SIZE = 500 * 1024 * 1024; // 500 MB
 
 /**
- * Transcode a local file (UTF-16LE/CRLF) → (UTF-8/LF) on the fly,
- * then upload it to GCS under "uploads/<datedName>".
+ * Uploads a local file to GCS under "uploads/<datedName>". If
+ * skipTranscode=true, it assumes the local file is already UTF-8/LF
+ * and does a normal bucket.upload(). Otherwise, it streams:
+ *   UTF-16LE/CRLF → (decode → normalize → encode) → GCS as UTF-8/LF.
  */
-async function uploadFile(localPath, fileName) {
-  // Build the destination name with today’s date
+async function uploadFile(localPath, fileName, skipTranscode = false) {
   const dated = `${fileName.replace('.txt','')}____${new Date()
     .toISOString().split('T')[0]}.txt`;
 
-  // 1) Read the raw local file
+  if (skipTranscode) {
+    // Simply upload as UTF-8 (chunks are already well-formed)
+    await bucket.upload(localPath, {
+      destination: `uploads/${dated}`,
+      gzip: true,
+      metadata: { contentType: 'text/csv; charset=utf-8' }
+    });
+    console.log(`✓ Uploaded (no transcode) ${dated}`);
+    return;
+  }
+
+  // Otherwise, transcode: raw UTF-16LE/CRLF → UTF-8/LF
   const rawStream = fs.createReadStream(localPath);
 
-  // 2) Decode from UTF-16LE → JS string
+  // 1) Decode from UTF-16LE → JS strings
   const decodeStream = iconv.decodeStream('utf16le');
 
-  // 3) Normalize CRLF → LF on string chunks
+  // 2) Normalize CRLF → LF
   const nlNormalizer = new Transform({
-    readableObjectMode: true,  // we’ll push strings
-    writableObjectMode: true,  // we’ll receive strings from decodeStream
+    readableObjectMode: true,
+    writableObjectMode: true,
     transform(chunk, encoding, callback) {
       // chunk is a JS string here
       const str = chunk.replace(/\r\n/g, '\n');
@@ -60,10 +72,10 @@ async function uploadFile(localPath, fileName) {
     }
   });
 
-  // 4) Encode JS string → UTF-8 bytes
+  // 3) Encode JS string → UTF-8 bytes
   const encodeStream = iconv.encodeStream('utf8');
 
-  // 5) Create a GCS write stream for "uploads/<dated>"
+  // 4) GCS write stream
   const remoteWrite = bucket
     .file(`uploads/${dated}`)
     .createWriteStream({
@@ -72,11 +84,10 @@ async function uploadFile(localPath, fileName) {
       metadata: { contentType: 'text/csv; charset=utf-8' }
     });
 
-  // 6) Pipe: raw → decode → normalize → encode → GCS
   await new Promise((resolve, reject) => {
     rawStream
-      .pipe(decodeStream)   // Buffer → string
-      .pipe(nlNormalizer)   // string → string (CRLF→LF)
+      .pipe(decodeStream)   // Buffer (UTF-16LE) → string
+      .pipe(nlNormalizer)   // string (CRLF→LF) → string
       .pipe(encodeStream)   // string → Buffer (UTF-8)
       .pipe(remoteWrite)    // Buffer → GCS
       .on('error', reject)
@@ -87,9 +98,10 @@ async function uploadFile(localPath, fileName) {
 }
 
 /**
- * Splits a large CSV‐formatted .txt into multiple files,
+ * Splits a large CSV-formatted .txt into multiple files,
  * always including the header as the first line in each chunk
- * and never slicing a row in half.
+ * and never slicing a row in half. Then uses uploadFile(..., true)
+ * to upload each chunk “as is” (skipTranscode).
  */
 async function splitAndUpload(localPath, fileName) {
   const fileStream = fs.createReadStream(localPath);
@@ -100,14 +112,13 @@ async function splitAndUpload(localPath, fileName) {
   let currentLines = [];
   let currentBytes = 0;
 
-  // Helper to flush currentLines into a chunk
+  // Flush currentLines into a chunk file, then upload (skipTranscode)
   async function flushChunk() {
     if (currentLines.length === 0) return;
     part++;
     const chunkName = `${fileName.replace('.txt','')}___part${part}.txt`;
     const chunkPath = path.join('/tmp', chunkName);
 
-    // Write header + buffered lines to a temporary file
     await new Promise((resolve, reject) => {
       const ws = fs.createWriteStream(chunkPath);
       ws.on('error', reject);
@@ -120,37 +131,29 @@ async function splitAndUpload(localPath, fileName) {
       ws.end();
     });
 
-    // Use the new uploadFile (which transcodes) instead of bucket.upload
-    await uploadFile(chunkPath, chunkName);
+    // Upload chunk WITHOUT transcoding (it's already UTF-8/LF)
+    await uploadFile(chunkPath, chunkName, true);
     fs.unlinkSync(chunkPath);
 
-    // Reset buffers
     currentLines = [];
     currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
   }
 
   for await (const line of rl) {
     if (headerLine === null) {
-      // Capture the very first line as header
       headerLine = line;
       currentBytes = Buffer.byteLength(headerLine + '\n', 'utf8');
       continue;
     }
-
-    // Measure this line’s byte length + newline
     const thisLineBytes = Buffer.byteLength(line + '\n', 'utf8');
-
-    // If adding it would exceed MAX_SIZE, flush what we have so far
     if (currentBytes + thisLineBytes > MAX_SIZE) {
       await flushChunk();
     }
-
-    // Buffer this line for the next chunk
     currentLines.push(line);
     currentBytes += thisLineBytes;
   }
 
-  // Flush any remaining lines as the last chunk
+  // Final flush
   await flushChunk();
 }
 
@@ -164,8 +167,8 @@ async function fetchFiles() {
 
     console.log(`→ Downloading ${name}`);
     await sftp.fastGet(remote, local, {
-      concurrency: 1,              // Number of concurrent reads
-      chunkSize:   1024 * 1024,    // 1MB per chunk
+      concurrency: 1,
+      chunkSize:   1024 * 1024,
       step: (transferred, chunk, total) => {
         const pct = Math.floor((transferred / total) * 100);
         if (pct % 10 === 0) console.log(`  • ${name}: ${pct}%`);
@@ -180,7 +183,7 @@ async function fetchFiles() {
       await splitAndUpload(local, name);
     } else {
       console.log(`  ↑ Uploading ${name}`);
-      await uploadFile(local, name);
+      await uploadFile(local, name); // no skipTranscode => do transcode
     }
 
     fs.unlinkSync(local);
