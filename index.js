@@ -13,10 +13,10 @@ const remoteDir = '/Test/Export/';
 
 const filesToFetch = [
   'TMZip.txt',
-  //'SalesRep.txt',
-  //'CM.txt',
-  //'PRODUCTS_EVERGREEN.txt',
-  //'Evergreen_OH_Full.txt',
+  'SalesRep.txt',
+  'CM.txt',
+  'PRODUCTS_EVERGREEN.txt',
+  'Evergreen_OH_Full.txt',
   'Evergreen_OD_Delta.txt'
 ];
 
